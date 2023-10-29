@@ -1,0 +1,1 @@
+gh-archive (GitHub Archive) is a Go-based command-line tool to locate archived repositories within a designated GitHub topic. Quickly discover which repositories are no longer actively maintained.
