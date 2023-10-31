@@ -10,6 +10,24 @@ import (
 	"regexp"
 )
 
+type Scraper struct {
+	client         *http.Client
+	repoURL        *regexp.Regexp
+	repoStar       *regexp.Regexp
+	isArchiveRegex *regexp.Regexp
+	isArchive      bool
+}
+
+func NewScraper() *Scraper {
+	return &Scraper{
+		client:         &http.Client{},
+		repoURL:        regexp.MustCompile(`<a\sid="code-tab-.*"[^>]*href="(.[^"]*)`),
+		repoStar:       regexp.MustCompile(`<span\sid="repo-stars-counter-star"[^>]*>(.*)<\/span>`),
+		isArchiveRegex: regexp.MustCompile(`It is now read-only`),
+		isArchive:      false,
+	}
+}
+
 func parseCMDLineArgs() (string, int) {
 	var t string
 	var n int
@@ -42,8 +60,8 @@ func parseCMDLineArgs() (string, int) {
 	return t, pageNo
 }
 
-func httpGetRequest(u string) string {
-	res, err := http.Get(u)
+func (s *Scraper) httpGetRequest(u string) string {
+	res, err := s.client.Get(u)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -55,8 +73,8 @@ func httpGetRequest(u string) string {
 	return string(data)
 }
 
-func extractRepoURL(s string, re *regexp.Regexp) []string {
-	matches := re.FindAllStringSubmatch(s, -1)
+func (s *Scraper) extractRepoURL(data string) []string {
+	matches := s.repoURL.FindAllStringSubmatch(data, -1)
 	var extractedMatches []string
 
 	for _, match := range matches {
@@ -68,27 +86,19 @@ func extractRepoURL(s string, re *regexp.Regexp) []string {
 	return extractedMatches
 }
 
-func extractStarCount(s string) string {
-	re, err := regexp.Compile(`<span\sid="repo-stars-counter-star"[^>]*>(.*)<\/span>`)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return re.FindStringSubmatch(s)[1]
+func (s *Scraper) extractStarCount(data string) string {
+	return s.repoStar.FindStringSubmatch(data)[1]
 }
 
-func isRepoArchived(s []string) map[string]string {
-	re, err := regexp.Compile(`It is now read-only`)
-	if err != nil {
-		log.Fatal(err)
-	}
+func (s *Scraper) isRepoArchived(data []string) map[string]string {
 	var archivedRepo = make(map[string]string)
-	for _, repo := range s {
+	for _, repo := range data {
 		u := "https://github.com" + repo
 		fmt.Print("Checking [", u, "]\n")
-		data := httpGetRequest(u)
-		matched := re.MatchString(data)
+		res := s.httpGetRequest(u)
+		matched := s.isArchiveRegex.MatchString(res)
 		if matched {
-			star := extractStarCount(data)
+			star := s.extractStarCount(res)
 			archivedRepo[u] = star
 		}
 	}
@@ -96,23 +106,19 @@ func isRepoArchived(s []string) map[string]string {
 }
 
 func main() {
-
 	t, pageNo := parseCMDLineArgs()
-
-	regexPattern := `<a\sid="code-tab-.*"[^>]*href="(.[^"]*)`
-	re := regexp.MustCompile(regexPattern)
-
+	scraper := NewScraper()
 	fmt.Println("# Searching for ARCHIVED Repositories")
 
 	for i := 1; i <= pageNo; i++ {
 		url := fmt.Sprintf("https://github.com/topics/%s?l=%s&page=%d", t, t, i)
-		data := httpGetRequest(url)
-		repoURLs := extractRepoURL(data, re)
-		res := isRepoArchived(repoURLs)
-		if len(res) == 0 {
+		res := scraper.httpGetRequest(url)
+		u := scraper.extractRepoURL(res)
+		a := scraper.isRepoArchived(u)
+		if len(a) == 0 {
 			fmt.Println("[-] No archived repository found")
 		} else {
-			for repo, star := range res {
+			for repo, star := range a {
 				fmt.Printf("[+] %s [ARCHIVED] : %s\n", repo, star)
 			}
 		}
