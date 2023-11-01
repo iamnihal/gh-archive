@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -28,12 +29,16 @@ func NewScraper() *Scraper {
 	}
 }
 
-func parseCMDLineArgs() (string, int) {
+func parseCMDLineArgs() (string, int, int, string, string) {
 	var t string
 	var n int
+	var o string
+	var l string
 
 	flag.StringVar(&t, "t", "", "Repository topic (for eg: javascript, python, ai, ml, etc)")
 	flag.IntVar(&n, "n", 0, "Number of repositories to check")
+	flag.StringVar(&o, "o", "", "Save archived repository result to a file")
+	flag.StringVar(&l, "l", "", "Save all repositories list to a file")
 
 	flag.Usage = func() {
 		fmt.Println("Options:")
@@ -57,7 +62,7 @@ func parseCMDLineArgs() (string, int) {
 	} else {
 		pageNo = 1
 	}
-	return t, pageNo
+	return t, pageNo, n, o, l
 }
 
 func (s *Scraper) httpGetRequest(u string) string {
@@ -73,17 +78,15 @@ func (s *Scraper) httpGetRequest(u string) string {
 	return string(data)
 }
 
-func (s *Scraper) extractRepoURL(data string) []string {
+func (s *Scraper) extractRepoURL(data string, m *[]string) {
 	matches := s.repoURL.FindAllStringSubmatch(data, -1)
-	var extractedMatches []string
 
 	for _, match := range matches {
 		if len(match) > 1 {
-			extractedMatches = append(extractedMatches, match[1])
+			*m = append(*m, match[1])
 		}
 	}
 
-	return extractedMatches
 }
 
 func (s *Scraper) extractStarCount(data string) string {
@@ -92,35 +95,77 @@ func (s *Scraper) extractStarCount(data string) string {
 
 func (s *Scraper) isRepoArchived(data []string) map[string]string {
 	var archivedRepo = make(map[string]string)
-	for _, repo := range data {
+	for i, repo := range data {
+		fmt.Printf("\r[INFO] Checking for archived repository [%d/%d]", i, len(data))
 		u := "https://github.com" + repo
-		fmt.Print("Checking [", u, "]\n")
 		res := s.httpGetRequest(u)
 		matched := s.isArchiveRegex.MatchString(res)
 		if matched {
 			star := s.extractStarCount(res)
 			archivedRepo[u] = star
+			fmt.Printf("\n[+] %s [ARCHIVED] : %s\n", u, star)
 		}
 	}
+	fmt.Println("\n[INFO] Operation Completed")
 	return archivedRepo
 }
 
+func (s *Scraper) saveOutput(d map[string]string, f string) {
+	data, err := json.Marshal(d)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = os.WriteFile(f, data, 0644)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func (s *Scraper) saveRepoList(d []string, f string) {
+	data, err := json.MarshalIndent(d, "", "    ")
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = os.WriteFile(f, data, 0644)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
 func main() {
-	t, pageNo := parseCMDLineArgs()
+	t, pageNo, n, o, l := parseCMDLineArgs()
 	scraper := NewScraper()
-	fmt.Println("# Searching for ARCHIVED Repositories")
+	m := make([]string, 0, n)
+
+	fmt.Printf("[INFO] Fetching list of top %d repositories from %s topic\n", n, t)
 
 	for i := 1; i <= pageNo; i++ {
 		url := fmt.Sprintf("https://github.com/topics/%s?l=%s&page=%d", t, t, i)
 		res := scraper.httpGetRequest(url)
-		u := scraper.extractRepoURL(res)
-		a := scraper.isRepoArchived(u)
-		if len(a) == 0 {
-			fmt.Println("[-] No archived repository found")
-		} else {
-			for repo, star := range a {
-				fmt.Printf("[+] %s [ARCHIVED] : %s\n", repo, star)
-			}
-		}
+		scraper.extractRepoURL(res, &m)
+	}
+
+	m = m[:n]
+
+	fmt.Printf("[INFO] Repositories list extracted successfully\n")
+
+	a := scraper.isRepoArchived(m)
+
+	if o != "" {
+		scraper.saveOutput(a, o)
+	}
+
+	if l != "" {
+		scraper.saveRepoList(m, l)
+	}
+
+	if len(a) == 0 {
+		fmt.Println("[-] No archived repository found")
 	}
 }
