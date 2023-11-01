@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sync"
 )
 
 type Scraper struct {
@@ -95,18 +96,38 @@ func (s *Scraper) extractStarCount(data string) string {
 
 func (s *Scraper) isRepoArchived(data []string) map[string]string {
 	var archivedRepo = make(map[string]string)
-	for i, repo := range data {
-		fmt.Printf("\r[INFO] Checking for archived repository [%d/%d]", i, len(data))
-		u := "https://github.com" + repo
-		res := s.httpGetRequest(u)
-		matched := s.isArchiveRegex.MatchString(res)
-		if matched {
-			star := s.extractStarCount(res)
-			archivedRepo[u] = star
-			fmt.Printf("\n[+] %s [ARCHIVED] : %s\n", u, star)
+
+	ch := make(chan struct {
+		url  string
+		star string
+	})
+
+	for _, repo := range data {
+		go func(repoURL string) {
+			u := "https://github.com" + repoURL
+			res := s.httpGetRequest(u)
+			matched := s.isArchiveRegex.MatchString(res)
+			if matched {
+				star := s.extractStarCount(res)
+				ch <- struct {
+					url  string
+					star string
+				}{url: u, star: star}
+			} else {
+				ch <- struct {
+					url  string
+					star string
+				}{}
+			}
+		}(repo)
+	}
+
+	for range data {
+		result := <-ch
+		if result.url != "" {
+			archivedRepo[result.url] = result.star
 		}
 	}
-	fmt.Println("\n[INFO] Operation Completed")
 	return archivedRepo
 }
 
@@ -139,11 +160,12 @@ func (s *Scraper) saveRepoList(d []string, f string) {
 }
 
 func main() {
+	var wg sync.WaitGroup
 	t, pageNo, n, o, l := parseCMDLineArgs()
 	scraper := NewScraper()
 	m := make([]string, 0, n)
 
-	fmt.Printf("[INFO] Fetching list of top %d repositories from %s topic\n", n, t)
+	fmt.Printf("[INFO] Fetching top %d repositories from %s topic\n", n, t)
 
 	for i := 1; i <= pageNo; i++ {
 		url := fmt.Sprintf("https://github.com/topics/%s?l=%s&page=%d", t, t, i)
@@ -157,15 +179,25 @@ func main() {
 
 	a := scraper.isRepoArchived(m)
 
+	for u, s := range a {
+		fmt.Printf("[+] %s [ARCHIVED] : %s\n", u, s)
+	}
 	if o != "" {
 		scraper.saveOutput(a, o)
 	}
-
 	if l != "" {
 		scraper.saveRepoList(m, l)
 	}
-
 	if len(a) == 0 {
 		fmt.Println("[-] No archived repository found")
 	}
+
+	for _, repo := range m {
+		wg.Add(1)
+		go func(repoURL string) {
+			defer wg.Done()
+		}(repo)
+	}
+
+	wg.Wait()
 }
