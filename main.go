@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"sync"
+	"time"
 
 	"github.com/iamnihal/gh-arhive/color"
 )
@@ -162,12 +163,13 @@ func (s *Scraper) saveRepoList(d []string, f string) {
 }
 
 func main() {
+	timeStart := time.Now()
 	var wg sync.WaitGroup
 	t, pageNo, n, o, l := parseCMDLineArgs()
 	scraper := NewScraper()
 	m := make([]string, 0, n)
 
-	fmt.Printf(color.Yellow+"[INFO] Fetching top %d repositories from %s topic\n"+color.Reset, n, t)
+	fmt.Printf(color.Yellow+"\n[INFO] Fetching top %d repositories from %s topic\n"+color.Reset, n, t)
 
 	for i := 1; i <= pageNo; i++ {
 		url := fmt.Sprintf("https://github.com/topics/%s?l=%s&page=%d", t, t, i)
@@ -202,4 +204,5 @@ func main() {
 	}
 
 	wg.Wait()
+	fmt.Println("\nCompleted in", time.Since(timeStart))
 }
