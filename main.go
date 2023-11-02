@@ -10,6 +10,8 @@ import (
 	"os"
 	"regexp"
 	"sync"
+
+	"github.com/iamnihal/gh-arhive/color"
 )
 
 type Scraper struct {
@@ -165,7 +167,7 @@ func main() {
 	scraper := NewScraper()
 	m := make([]string, 0, n)
 
-	fmt.Printf("[INFO] Fetching top %d repositories from %s topic\n", n, t)
+	fmt.Printf(color.Yellow+"[INFO] Fetching top %d repositories from %s topic\n"+color.Reset, n, t)
 
 	for i := 1; i <= pageNo; i++ {
 		url := fmt.Sprintf("https://github.com/topics/%s?l=%s&page=%d", t, t, i)
@@ -175,12 +177,12 @@ func main() {
 
 	m = m[:n]
 
-	fmt.Printf("[INFO] Repositories list extracted successfully\n")
+	fmt.Printf(color.Yellow + "[INFO] Repositories list extracted successfully\n" + color.Reset)
 
 	a := scraper.isRepoArchived(m)
 
 	for u, s := range a {
-		fmt.Printf("[+] %s [ARCHIVED] : %s\n", u, s)
+		fmt.Printf(color.Green+"[+] %s [ARCHIVED] : %s\n"+color.Reset, u, s)
 	}
 	if o != "" {
 		scraper.saveOutput(a, o)
@@ -189,7 +191,7 @@ func main() {
 		scraper.saveRepoList(m, l)
 	}
 	if len(a) == 0 {
-		fmt.Println("[-] No archived repository found")
+		fmt.Println(color.Red + "[-] No archived repository found" + color.Reset)
 	}
 
 	for _, repo := range m {
