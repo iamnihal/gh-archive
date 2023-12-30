@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/iamnihal/gh-arhive/color"
+	"github.com/iamnihal/gh-archive/color"
 )
 
 type Scraper struct {
