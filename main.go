@@ -25,12 +25,10 @@ type Scraper struct {
 
 func NewScraper() *Scraper {
 	return &Scraper{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		client:         &http.Client{},
 		repoURL:        regexp.MustCompile(`<a\sid="code-tab-.*"[^>]*href="(.[^"]*)`),
 		repoStar:       regexp.MustCompile(`<span\sid="repo-stars-counter-star"[^>]*>(.*)<\/span>`),
-		isArchiveRegex: regexp.MustCompile(`(?i)(read-only|archived|This repository has been archived)`),
+		isArchiveRegex: regexp.MustCompile(`It is now read-only`),
 		isArchive:      false,
 	}
 }
@@ -71,35 +69,28 @@ func parseCMDLineArgs() (string, int, int, string, string) {
 	return t, pageNo, n, o, l
 }
 
-func (s *Scraper) httpGetRequest(u string) (string, error) {
-	fmt.Printf(color.Cyan+"[DEBUG] Fetching: %s\n"+color.Reset, u)
-
+func (s *Scraper) httpGetRequest(u string) string {
 	res, err := s.client.Get(u)
 	if err != nil {
-		fmt.Printf(color.Red+"[ERROR] Failed to fetch %s: %v\n"+color.Reset, u, err)
-		return "", err
+		log.Fatal(err)
 	}
-	defer res.Body.Close()
-
-	fmt.Printf(color.Cyan+"[DEBUG] Response status: %d for %s\n"+color.Reset, res.StatusCode, u)
-
 	data, err := io.ReadAll(res.Body)
+	defer res.Body.Close()
 	if err != nil {
-		fmt.Printf(color.Red+"[ERROR] Failed to read body for %s: %v\n"+color.Reset, u, err)
-		return "", err
+		log.Fatal(err)
 	}
-	return string(data), nil
+	return string(data)
 }
 
 func (s *Scraper) extractRepoURL(data string, m *[]string) {
 	matches := s.repoURL.FindAllStringSubmatch(data, -1)
-	fmt.Printf(color.Cyan+"[DEBUG] Found %d repo URLs in page\n"+color.Reset, len(matches))
 
 	for _, match := range matches {
 		if len(match) > 1 {
 			*m = append(*m, match[1])
 		}
 	}
+
 }
 
 func (s *Scraper) extractStarCount(data string) string {
@@ -108,43 +99,38 @@ func (s *Scraper) extractStarCount(data string) string {
 
 func (s *Scraper) isRepoArchived(data []string) map[string]string {
 	var archivedRepo = make(map[string]string)
-	var mu sync.Mutex
 
-	fmt.Printf(color.Yellow+"\n[INFO] Checking %d repositories for archive status\n"+color.Reset, len(data))
+	ch := make(chan struct {
+		url  string
+		star string
+	})
 
-	var wg sync.WaitGroup
 	for _, repo := range data {
-		wg.Add(1)
 		go func(repoURL string) {
-			defer wg.Done()
 			u := "https://github.com" + repoURL
-			res, err := s.httpGetRequest(u)
-			if err != nil {
-				fmt.Printf(color.Red+"[ERROR] Failed to check %s: %v\n"+color.Reset, u, err)
-				return
-			}
-
+			res := s.httpGetRequest(u)
 			matched := s.isArchiveRegex.MatchString(res)
-			fmt.Printf(color.Cyan+"[DEBUG] %s - Archived: %v\n"+color.Reset, u, matched)
-
 			if matched {
 				star := s.extractStarCount(res)
-				if star == "" {
-					star = "0"
-				}
-				fmt.Printf(color.Green+"[+] %s [ARCHIVED] : %s stars\n"+color.Reset, u, star)
-				mu.Lock()
-				archivedRepo[u] = star
-				mu.Unlock()
+				ch <- struct {
+					url  string
+					star string
+				}{url: u, star: star}
+			} else {
+				ch <- struct {
+					url  string
+					star string
+				}{}
 			}
 		}(repo)
 	}
 
-	wg.Wait()
-
-	fmt.Printf(color.Yellow+"\n[INFO] Checked %d repos: %d archived\n"+color.Reset,
-		len(data), len(archivedRepo))
-
+	for range data {
+		result := <-ch
+		if result.url != "" {
+			archivedRepo[result.url] = result.star
+		}
+	}
 	return archivedRepo
 }
 
@@ -178,55 +164,45 @@ func (s *Scraper) saveRepoList(d []string, f string) {
 
 func main() {
 	timeStart := time.Now()
+	var wg sync.WaitGroup
 	t, pageNo, n, o, l := parseCMDLineArgs()
 	scraper := NewScraper()
 	m := make([]string, 0, n)
 
 	fmt.Printf(color.Yellow+"\n[INFO] Fetching top %d repositories from %s topic\n"+color.Reset, n, t)
-	fmt.Printf(color.Cyan+"[DEBUG] Topic: %s, Pages: %d, Max repos: %d\n"+color.Reset, t, pageNo, n)
 
 	for i := 1; i <= pageNo; i++ {
 		url := fmt.Sprintf("https://github.com/topics/%s?l=%s&page=%d", t, t, i)
-		fmt.Printf(color.Cyan+"[DEBUG] Fetching page %d/%d: %s\n"+color.Reset, i, pageNo, url)
-		res, err := scraper.httpGetRequest(url)
-		if err != nil {
-			fmt.Printf(color.Red+"[ERROR] Failed to fetch page %d: %v\n"+color.Reset, i, err)
-			continue
-		}
+		res := scraper.httpGetRequest(url)
 		scraper.extractRepoURL(res, &m)
 	}
 
-	fmt.Printf(color.Cyan+"[DEBUG] Total repos found: %d\n"+color.Reset, len(m))
+	m = m[:n]
 
-	if len(m) > n && n > 0 {
-		m = m[:n]
-	}
-
-	fmt.Printf(color.Yellow+"[INFO] Repositories list extracted successfully (%d repos)\n"+color.Reset, len(m))
-
-	if len(m) == 0 {
-		fmt.Println(color.Red + "[-] No repositories found for this topic" + color.Reset)
-		if o != "" {
-			scraper.saveOutput(make(map[string]string), o)
-		}
-		return
-	}
+	fmt.Printf(color.Yellow + "[INFO] Repositories list extracted successfully\n" + color.Reset)
 
 	a := scraper.isRepoArchived(m)
 
-	fmt.Printf(color.Yellow+"\n[INFO] Found %d archived repositories\n"+color.Reset, len(a))
-
+	for u, s := range a {
+		fmt.Printf(color.Green+"[+] %s [ARCHIVED] : %s\n"+color.Reset, u, s)
+	}
 	if o != "" {
-		fmt.Printf(color.Cyan+"[DEBUG] Saving output to: %s\n"+color.Reset, o)
 		scraper.saveOutput(a, o)
 	}
 	if l != "" {
-		fmt.Printf(color.Cyan+"[DEBUG] Saving repo list to: %s\n"+color.Reset, l)
 		scraper.saveRepoList(m, l)
 	}
 	if len(a) == 0 {
 		fmt.Println(color.Red + "[-] No archived repository found" + color.Reset)
 	}
 
-	fmt.Println(color.Green+"\nCompleted in "+color.Reset, time.Since(timeStart))
+	for _, repo := range m {
+		wg.Add(1)
+		go func(repoURL string) {
+			defer wg.Done()
+		}(repo)
+	}
+
+	wg.Wait()
+	fmt.Println("\nCompleted in", time.Since(timeStart))
 }
